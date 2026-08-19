@@ -215,6 +215,7 @@ function App() {
   const [chyba, setChyba] = useState('');
   const [filtr, setFiltr] = useState('problemy');
   const [nacitam, setNacitam] = useState(false);
+  const [hledej, setHledej] = useState('');
 
   const zkontroluj = (text) => {
     setChyba('');
@@ -257,9 +258,15 @@ function App() {
     ok: vysledky.filter(v => v.stav === 'ok').length,
   } : null;
 
-  const zobrazene = vysledky ? vysledky.filter(v =>
+  const podleStavu = vysledky ? vysledky.filter(v =>
     filtr === 'vse' ? true : filtr === 'problemy' ? v.stav !== 'ok' : v.stav === filtr
-  ).slice(0, 500) : [];
+  ) : [];
+  const hledejFold = fold(hledej.trim());
+  const podleHledani = hledejFold ? podleStavu.filter(v => {
+    const hay = fold([v.product, v.productname, v.leaf, ...(v.problemy || []).map(p => p.text)].filter(Boolean).join(' '));
+    return hay.includes(hledejFold);
+  }) : podleStavu;
+  const zobrazene = podleHledani.slice(0, 500);
 
   const columns = [
     { title: 'Produkt', dataIndex: 'product', key: 'product', width: '30%',
@@ -318,6 +325,9 @@ function App() {
               Zobrazeno: ${{ vse: 'vše', chyba: 's chybou', varovani: 's varováním', ok: 'bez problémů', problemy: 's problémy' }[filtr]} — klikněte na kartu nahoře pro filtr
             <//>
           <//>`}>
+          <${Input} allowClear placeholder="Hledat konkrétní nabídku — podle názvu, kategorie nebo problému…"
+            prefix=${html`<${FileSearchOutlined} style=${{ color: token.colorTextQuaternary }} />`}
+            value=${hledej} onChange=${e => setHledej(e.target.value)} style=${{ marginBottom: 12, maxWidth: 420 }} />
           ${zobrazene.length ? html`
             <${Table} columns=${columns} dataSource=${zobrazene.map((v, i) => ({ ...v, key: i }))} size="middle"
               pagination=${{ pageSize: 20, showSizeChanger: false }}
@@ -337,9 +347,9 @@ function App() {
                   <//>
                 </div>`,
               }} />
-            ${(filtr === 'problemy' ? stat.chyba + stat.varovani : stat.celkem) > 500
+            ${podleHledani.length > 500
               ? html`<${Text} type="secondary" style=${{ fontSize: token.fontSizeSM }}>Zobrazeno prvních 500 položek.<//>` : null}
-          ` : html`<${Empty} description="Žádné položky k zobrazení (podle filtru)." />`}
+          ` : html`<${Empty} description=${hledej.trim() ? 'Žádná nabídka podle hledání nenalezena.' : 'Žádné položky k zobrazení (podle filtru).'} />`}
         <//>
       ` : null}
     </div>

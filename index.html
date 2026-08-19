@@ -165,9 +165,8 @@ function validujPolozku(it) {
   const problemy = [];
   const push = (typ, text) => problemy.push({ typ, text });
 
-  if (!product) push('chyba', 'Chybí tag PRODUCT');
-  if (!productname) push('chyba', 'Chybí tag PRODUCTNAME');
-  if (product && productname && product !== productname)
+  if (!product && !productname) push('chyba', 'Chybí tag PRODUCT i PRODUCTNAME (produkt nemá název)');
+  else if (product && productname && product !== productname)
     push('varovani', 'PRODUCT a PRODUCTNAME nejsou totožné (doporučujeme je sjednotit)');
 
   const leaf = leafOf(categorytext);
@@ -265,8 +264,8 @@ function App() {
   const columns = [
     { title: 'Produkt', dataIndex: 'product', key: 'product', width: '30%',
       render: (v, r) => html`<div>
-        <${Text} strong>${v || html`<${Text} type="danger">(chybí PRODUCT)<//>`}<//>
-        ${r.productname && r.productname !== v ? html`<div style=${{ fontSize: token.fontSizeSM, color: token.colorTextTertiary }}>PRODUCTNAME: ${r.productname}</div>` : null}
+        <${Text} strong>${v || r.productname || html`<${Text} type="danger">(chybí název)<//>`}<//>
+        ${v && r.productname && r.productname !== v ? html`<div style=${{ fontSize: token.fontSizeSM, color: token.colorTextTertiary }}>PRODUCTNAME: ${r.productname}</div>` : null}
       </div>` },
     { title: 'Kategorie', dataIndex: 'leaf', key: 'leaf', width: '22%',
       render: (v, r) => v ? html`<${Text}>${v}<//>${r.rule ? html`<${Tooltip} title=${'Vzor názvu: ' + splitRule(r.rule).format}><span style=${{ marginInlineStart: 6, color: token.colorTextTertiary, cursor: 'help' }}>ⓘ</span><//>` : null}` : html`<${Text} type="secondary">—<//>` },

@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Heureka · Kontrola feedu (prototyp)</title>
+<style>
+  html, body, #root { height: 100%; margin: 0; }
+  body { font-family: system-ui, Avenir, Helvetica, Arial, sans-serif; background: #f0f2f5; }
+  .page { max-width: 1040px; margin: 0 auto; padding: 32px 24px 80px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.0.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@19.0.0?deps=react@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client?deps=react@19.0.0",
+    "antd": "https://esm.sh/antd@6.0.0?external=react,react-dom&bundle-deps",
+    "@ant-design/icons": "https://esm.sh/@ant-design/icons@6.0.0?external=react,react-dom&bundle-deps",
+    "htm": "https://esm.sh/htm@3.1.1"
+  }
+}
+</script>
+
+<script type="module">
+import React, { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import * as antd from 'antd';
+import * as Icons from '@ant-design/icons';
+import htm from 'htm';
+
+const html = htm.bind(React.createElement);
+const {
+  ConfigProvider, Typography, Input, Button, Card, Alert, Table, Tag, Space, Flex, Divider,
+  Segmented, Upload, Statistic, Row, Col, Empty, Tooltip, theme
+} = antd;
+const { Title, Paragraph, Text } = Typography;
+const { UploadOutlined, FileSearchOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutlined, LinkOutlined } = Icons;
+
+/* ---- Data (stejná jako Párovací asistent) ---- */
+const DATA = await (await fetch('./proto-data.json')).json();
+const RULES = DATA.rules, PARAMS = DATA.params;
+const RULES_KEYS = Object.keys(RULES).sort((a, b) => a.length - b.length);
+const PARAMS_KEYS = Object.keys(PARAMS).sort((a, b) => a.length - b.length);
+const EAN_CATEGORIES = new Set(['audioknihy', 'e-book elektronické knihy', 'filmy', 'hudba', 'knihy', 'komiksy a manga', 'mapy a průvodci', 'učebnice']);
+
+const fold = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+function dejZakladSlova(slovo) {
+  slovo = fold(slovo);
+  if (slovo.length <= 3) return slovo;
+  const konc = ['ova','ove','ovy','ovou','oveho','ovemu','ovych','ovym','ovymi','ami','em','ech','ich','um','ou','am','y','e','a','i','o','u'];
+  for (const k of konc) { if (slovo.endsWith(k)) { const r = slovo.slice(0, -k.length); if (r.length >= 3) return r; break; } }
+  return slovo;
+}
+// STRIKTNÍ dohledání — jen přesný klíč nebo přesný kmen (ne volné substring shody).
+// Máme přesnou kategorii z CATEGORYTEXT, takže si nesmíme vymýšlet cizí pravidla (např. "tatami").
+function najdiPresne(leaf, db) {
+  const k = leaf.toLowerCase().trim();
+  if (Object.prototype.hasOwnProperty.call(db, k)) return db[k];
+  const z = dejZakladSlova(k);
+  for (const kd in db) { if (dejZakladSlova(kd) === z) return db[kd]; }
+  return null;
+}
+const parseParams = t => (t ? t.split(',').map(s => s.trim()).filter(Boolean) : []);
+const splitRule = r => { if (!r) return { format: '', example: '' }; const m = r.match(/\s[–—]\s/); if (!m) return { format: r.trim(), example: '' }; const i = r.indexOf(m[0]); return { format: r.slice(0, i).trim(), example: r.slice(i + m[0].length).trim() }; };
+const leafOf = ct => (ct || '').split('|').pop().trim().toLowerCase();
+
+/* ---- Validátor NÁZVU: rozpozná složky vzoru (Značka | Barva | Objem …) v názvu ---- */
+// Barvy jako KOŘENY → poznají se všechny tvary (černá/černé/černý/černém…).
+const BARVY = ['cern','bil','cerven','modr','zelen','zlut','oranzov','fialov','ruzov','hned','bezov','zlat','stribr','tyrkys','khaki','antracit','bordo','purpur','azur','kremov','smetanov','vinov','grafit','olivov','lososov','koralov','indigov','marengo','petrolej'];
+const MATERIALY = ['bavln','polyester','kuze','usen','drev','sklo','plast','nerez','kov','guma','silikon','vlna','vlnen','len','lnen','hedvab','keramik','porcelan'];
+// Slovníky pro "volné" složky (poskládané ze scrapu Heureky + běžné hodnoty). Orientační.
+const PRICHUTE = ['kure','hovez','kral','jehnec','kachn','krut','losos','tunak','drubez','telec','zverin','sardin','tresk','kreve','jelen','vepr','pstruh','ryba','rybi','jahod','cokolad','vanilk','banan','orisk','orech','karamel','kokos','malin','boruvk','visn','citron','pomeranc','jablk','hrusk','mango','meloun','brosk','kava','skoric','pistac','ananas','limetk','oreo','tiramis','slany'];
+const URCENI = ['adult','junior','senior','kitten','puppy','stenat','stene','dospel','detsk','kastrov','steriliz','large breed','small breed'];
+const KONZISTENCE = ['v zele','ve stav','v omacc','pastik','mousse','pena','krem','prasek','tablet','kapsl','sirup','tekut','granul','susen','koncentrat','pate'];
+const slovnikHit = (dic, name) => { const f = fold(name); return dic.some(r => r.includes(' ') ? f.includes(r) : new RegExp('\\b' + r).test(f)); };
+const POCET_UNITS = ['ks','kus\\w*','pack','balen\\w*','tablet\\w*','kapsl\\w*','tobol\\w*','sac\\w*','porc\\w*','dn[ií]','dni','ampul\\w*'];
+const numUnit = (f, units) => new RegExp('\\b\\d+([.,]\\d+)?\\s?(' + units.join('|') + ')\\b').test(f);
+// anglické barvy (elektronika): whole-word shoda, ať "red" nekoliduje s "redukce"
+const BARVY_EN = ['black','white','blue','red','green','yellow','orange','purple','pink','brown','grey','gray','gold','silver','navy','beige','turquoise','violet','graphite','midnight','starlight'];
+const BARVY_EN_MULTI = ['space gray','space grey','rose gold','jet black','sky blue'];
+const jeBarva = f => BARVY.some(r => new RegExp('\\b' + r).test(f)) || /\bsed[aeiy]/.test(f) || /\bsiv/.test(f) || /barevn/.test(f) || /\bpruhledn/.test(f) || /\btransparent/.test(f) || /\bcir[aey]/.test(f)
+  || BARVY_EN.some(r => new RegExp('\\b' + r + '\\b').test(f)) || BARVY_EN_MULTI.some(r => f.includes(r));
+// "kód/produktové číslo" = token s písmeny+číslicemi (≥2 písmena, ≥1 číslice) NEBO čistě číslo ≥5 znaků
+function jeKod(name) {
+  return name.split(/\s+/).some(t => {
+    const c = t.replace(/[.,;:()]/g, '');
+    if (/^\d{5,}$/.test(c)) return true;
+    const p = (c.match(/[a-zA-Z]/g) || []).length, d = (c.match(/\d/g) || []).length;
+    return p >= 2 && d >= 1 && c.length >= 4;
+  });
+}
+function detekujSlozku(slot, name, manufacturer) {
+  const f = fold(name);
+  switch (slot) {
+    case 'objem':    return numUnit(f, ['ml','cl','dl','l','litr\\w*']);
+    case 'hmotnost': return numUnit(f, ['mg','dkg','kg','g','gr','gram\\w*']);
+    case 'rozmer':   return /\d+([.,]\d+)?\s?[x×]\s?\d/.test(f) || numUnit(f, ['mm','cm','m']); // + Délka/Průměr (metrické)
+    case 'barva':    return jeBarva(f);
+    case 'material': return MATERIALY.some(m => new RegExp('\\b' + m).test(f));
+    case 'velikost': return /\b(XXS|XS|S|M|L|XL|XXL|XXXL)\b/.test(name) || /\bvel\.?\s*\w/.test(f);
+    case 'pamet':    return /\b\d+([.,]\d+)?\s?(gb|tb|mb)\b/.test(f); // RAM / úložiště: 128GB, 1 TB
+    case 'pocet':    return new RegExp('\\b\\d+\\s?(' + POCET_UNITS.join('|') + ')\\b').test(f) || /\b\d+\s?[x×]\s?\d/.test(f);
+    case 'kod':      return jeKod(name);
+    case 'nazev':    return name.trim().length > 0;
+    case 'prichut':     return slovnikHit(PRICHUTE, name);
+    case 'urceni':      return slovnikHit(URCENI, name);
+    case 'konzistence': return slovnikHit(KONZISTENCE, name);
+    case 'znacka':   return manufacturer ? f.includes(fold(manufacturer)) : null;
+    default:         return null; // volná složka (Řada, Typ, Druh, Určení, Příchuť…) → ověřte ručně
+  }
+}
+function klasifikujSlozku(label) {
+  const f = fold(label);
+  if (f.includes('objem')) return 'objem';
+  if (f.includes('hmotnost') || f.includes('vaha') || f.includes('gramaz')) return 'hmotnost';
+  if (f.includes('rozmer') || f.includes('delka') || f.includes('prumer')) return 'rozmer';
+  if (f.includes('pamet') || f.includes('uloz')) return 'pamet'; // "Velikost RAM a interní paměti", "Kapacita úložiště"
+  if (f.includes('velikost')) return 'velikost';
+  if (f.includes('barva') || f.includes('barevn') || f.includes('odstin')) return 'barva';
+  if (f.includes('material')) return 'material';
+  if (f.includes('cislo') || f.includes('kod') || f.includes('oznaceni')) return 'kod';
+  if (f.includes('pocet') || f.includes('mnozstvi')) return 'pocet';
+  if (f.includes('prichut')) return 'prichut';
+  if (f.includes('urceni')) return 'urceni';
+  if (f.includes('konzistenc')) return 'konzistence';
+  if (f.includes('nazev')) return 'nazev';
+  if (f.includes('znacka') || f.includes('vyrobce')) return 'znacka';
+  return null;
+}
+function vzorTokeny(format) {
+  return format.split('|').map(t => {
+    t = t.trim();
+    const m = t.match(/^(.*?)\s*\((.*)\)\s*$/);
+    return { label: (m ? m[1] : t).trim(), optional: !!m && /pokud/i.test(m[2]) };
+  }).filter(t => t.label);
+}
+// vrátí složky vzoru se stavem: je / chybi / nepovinne / rucne
+function analyzujNazev(ruleFormat, name, manufacturer) {
+  return vzorTokeny(ruleFormat).map(t => {
+    const slot = klasifikujSlozku(t.label);
+    const res = slot ? detekujSlozku(slot, name, manufacturer) : null;
+    let stav = 'rucne';
+    if (res === true) stav = 'je';
+    else if (res === false) stav = t.optional ? 'nepovinne' : 'chybi';
+    return { label: t.label, stav };
+  });
+}
+
+/* ---- Validace jedné položky ---- */
+function validujPolozku(it) {
+  const get = t => { const el = it.getElementsByTagName(t)[0]; return el ? el.textContent.trim() : ''; };
+  const product = get('PRODUCT');
+  const productname = get('PRODUCTNAME');
+  const categorytext = get('CATEGORYTEXT');
+  const manufacturer = get('MANUFACTURER');
+  const ean = get('EAN') || get('EAN13');
+  const paramNames = [...it.getElementsByTagName('PARAM')].map(p => { const n = p.getElementsByTagName('PARAM_NAME')[0]; return n ? n.textContent.trim() : ''; }).filter(Boolean);
+
+  const problemy = [];
+  const push = (typ, text) => problemy.push({ typ, text });
+
+  if (!product) push('chyba', 'Chybí tag PRODUCT');
+  if (!productname) push('chyba', 'Chybí tag PRODUCTNAME');
+  if (product && productname && product !== productname)
+    push('varovani', 'PRODUCT a PRODUCTNAME nejsou totožné (doporučujeme je sjednotit)');
+
+  const leaf = leafOf(categorytext);
+  let rule = null, komponenty = null;
+  if (!categorytext) {
+    push('varovani', 'Chybí CATEGORYTEXT (koncová kategorie)');
+  } else {
+    rule = najdiPresne(leaf, RULES);
+    // povinné parametry z kategorie vs. parametry v položce
+    const required = parseParams(najdiPresne(leaf, PARAMS));
+    if (required.length) {
+      const mameStemy = paramNames.map(dejZakladSlova);
+      const chybi = required.filter(r => { const rz = dejZakladSlova(r); return !mameStemy.some(m => m === rz || m.includes(rz) || rz.includes(m)); });
+      if (chybi.length) push('chyba', 'Chybí povinné parametry: ' + chybi.join(', '));
+    }
+    // EAN u knižních kategorií
+    if (EAN_CATEGORIES.has(leaf) && !ean) push('varovani', 'Chybí EAN (u této kategorie povinný)');
+    // VALIDÁTOR NÁZVU — rozbor podle vzoru, co v názvu chybí
+    if (rule) {
+      const nazev = productname || product;
+      komponenty = analyzujNazev(splitRule(rule).format, nazev, manufacturer);
+      const chybiSlozky = komponenty.filter(k => k.stav === 'chybi').map(k => k.label);
+      if (chybiSlozky.length) push('chyba', 'V názvu chybí: ' + chybiSlozky.join(', '));
+    }
+  }
+
+  const maChybu = problemy.some(p => p.typ === 'chyba');
+  const maVarovani = problemy.some(p => p.typ === 'varovani');
+  return { product, productname, categorytext, leaf, rule, komponenty, problemy, stav: maChybu ? 'chyba' : (maVarovani ? 'varovani' : 'ok') };
+}
+
+function zpracujFeed(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('Neplatné XML — zkontrolujte, že jste vložili celý feed.');
+  let items = [...doc.getElementsByTagName('SHOPITEM')];
+  if (!items.length) items = [...doc.getElementsByTagName('ITEM')];
+  if (!items.length) throw new Error('Ve feedu nebyly nalezeny žádné položky (SHOPITEM / ITEM).');
+  return items.map(validujPolozku);
+}
+
+function App() {
+  const { token } = theme.useToken();
+  const [xml, setXml] = useState('');
+  const [url, setUrl] = useState('');
+  const [vysledky, setVysledky] = useState(null);
+  const [chyba, setChyba] = useState('');
+  const [filtr, setFiltr] = useState('problemy');
+  const [nacitam, setNacitam] = useState(false);
+
+  const zkontroluj = (text) => {
+    setChyba('');
+    try {
+      const r = zpracujFeed((text ?? xml).trim());
+      setVysledky(r);
+      // po kontrole automaticky zobraz nejzávažnější neprázdnou skupinu
+      setFiltr(r.some(x => x.stav === 'chyba') ? 'chyba' : r.some(x => x.stav === 'varovani') ? 'varovani' : 'ok');
+    } catch (e) { setVysledky(null); setChyba(e.message); }
+  };
+
+  const nactiZUrl = async () => {
+    if (!url.trim()) return;
+    setNacitam(true); setChyba('');
+    const zdroje = [url, 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url), 'https://corsproxy.io/?url=' + encodeURIComponent(url)];
+    for (const z of zdroje) {
+      try {
+        const res = await fetch(z);
+        const t = await res.text();
+        if (t.includes('<SHOPITEM') || t.includes('<ITEM')) { setXml(t); setNacitam(false); zkontroluj(t); return; }
+      } catch (e) { /* zkus další */ }
+    }
+    setNacitam(false);
+    setChyba('Feed se nepodařilo načíst z URL — bývá chráněný (CORS / jen pro Heureku). Stáhněte XML a vložte ho níže, nebo nahrajte soubor.');
+  };
+
+  const uploadProps = {
+    accept: '.xml,text/xml,application/xml', showUploadList: false, beforeUpload: (file) => {
+      const reader = new FileReader();
+      reader.onload = e => { setXml(e.target.result); zkontroluj(e.target.result); };
+      reader.readAsText(file, 'utf-8');
+      return false;
+    },
+  };
+
+  const stat = vysledky ? {
+    celkem: vysledky.length,
+    chyba: vysledky.filter(v => v.stav === 'chyba').length,
+    varovani: vysledky.filter(v => v.stav === 'varovani').length,
+    ok: vysledky.filter(v => v.stav === 'ok').length,
+  } : null;
+
+  const zobrazene = vysledky ? vysledky.filter(v =>
+    filtr === 'vse' ? true : filtr === 'problemy' ? v.stav !== 'ok' : v.stav === filtr
+  ).slice(0, 500) : [];
+
+  const columns = [
+    { title: 'Produkt', dataIndex: 'product', key: 'product', width: '30%',
+      render: (v, r) => html`<div>
+        <${Text} strong>${v || html`<${Text} type="danger">(chybí PRODUCT)<//>`}<//>
+        ${r.productname && r.productname !== v ? html`<div style=${{ fontSize: token.fontSizeSM, color: token.colorTextTertiary }}>PRODUCTNAME: ${r.productname}</div>` : null}
+      </div>` },
+    { title: 'Kategorie', dataIndex: 'leaf', key: 'leaf', width: '22%',
+      render: (v, r) => v ? html`<${Text}>${v}<//>${r.rule ? html`<${Tooltip} title=${'Vzor názvu: ' + splitRule(r.rule).format}><span style=${{ marginInlineStart: 6, color: token.colorTextTertiary, cursor: 'help' }}>ⓘ</span><//>` : null}` : html`<${Text} type="secondary">—<//>` },
+    { title: 'Nalezené problémy', key: 'problemy',
+      render: (_, r) => r.problemy.length ? html`<${Space} direction="vertical" size=${4} style=${{ width: '100%' }}>
+        ${r.problemy.map((p, i) => html`<${Tag} key=${i} color=${p.typ === 'chyba' ? 'error' : 'warning'} style=${{ whiteSpace: 'normal' }}>${p.text}<//>`)}
+      <//>` : html`<${Tag} color="success" icon=${html`<${CheckCircleOutlined} />`}>OK<//>` },
+  ];
+
+  return html`
+    <div class="page">
+      <${Title} level=${2} style=${{ marginTop: 0 }}>Kontrola feedu<//>
+      <${Paragraph} type="secondary" style=${{ maxWidth: 820 }}>
+        Nahrajte nebo vložte svůj Heureka XML feed. Nástroj projde položky, u každé podle kategorie (CATEGORYTEXT) najde
+        požadovaný vzor názvu a povinné parametry a upozorní na chyby — <strong>rozebere název a řekne, které složky
+        v něm chybí</strong> (např. Objem, Barva, Velikost), dále chybějící povinné parametry, nesoulad
+        PRODUCT vs. PRODUCTNAME nebo chybějící EAN u knih. Řádek rozkliknete pro detailní rozbor názvu.
+      <//>
+
+      <${Card} style=${{ marginBottom: 16 }}>
+        <${Flex} gap=${8} wrap style=${{ marginBottom: 12 }}>
+          <${Input} placeholder="https://…/products.xml" value=${url} onChange=${e => setUrl(e.target.value)} style=${{ flex: '1 1 320px' }}
+            prefix=${html`<${LinkOutlined} style=${{ color: token.colorTextQuaternary }} />`} onPressEnter=${nactiZUrl} />
+          <${Button} onClick=${nactiZUrl} loading=${nacitam}>Načíst z URL<//>
+          <${Upload} ...${uploadProps}><${Button} icon=${html`<${UploadOutlined} />`}>Nahrát XML soubor<//><//>
+        <//>
+        <${Text} type="secondary" style=${{ fontSize: token.fontSizeSM }}>
+          Chráněné feedy (jen pro Heureku) nejde načíst z URL — v tom případě XML stáhněte a vložte sem:
+        <//>
+        <${Input.TextArea} rows=${4} placeholder="…nebo sem vložte obsah XML feedu" value=${xml}
+          onChange=${e => setXml(e.target.value)} style=${{ marginTop: 8, fontFamily: 'monospace', fontSize: token.fontSizeSM }} />
+        <${Button} type="primary" icon=${html`<${FileSearchOutlined} />`} onClick=${() => zkontroluj()} disabled=${!xml.trim()} style=${{ marginTop: 12 }}>
+          Zkontrolovat feed
+        <//>
+      <//>
+
+      ${chyba ? html`<${Alert} type="error" showIcon message=${chyba} style=${{ marginBottom: 16 }} />` : null}
+
+      ${stat ? html`
+        <${Row} gutter=${12} style=${{ marginBottom: 16 }}>
+          <${Col} flex="1"><${Card} size="small" hoverable onClick=${() => setFiltr('vse')} style=${{ cursor: 'pointer', outline: filtr === 'vse' ? '2px solid ' + token.colorPrimary : 'none', outlineOffset: -1 }}><${Statistic} title="Položek (vše)" value=${stat.celkem} /><//><//>
+          <${Col} flex="1"><${Card} size="small" hoverable onClick=${() => setFiltr('chyba')} style=${{ cursor: 'pointer', outline: filtr === 'chyba' ? '2px solid ' + token.colorError : 'none', outlineOffset: -1 }}><${Statistic} title="S chybou" value=${stat.chyba} valueStyle=${{ color: token.colorError }} prefix=${html`<${CloseCircleOutlined} />`} /><//><//>
+          <${Col} flex="1"><${Card} size="small" hoverable onClick=${() => setFiltr('varovani')} style=${{ cursor: 'pointer', outline: filtr === 'varovani' ? '2px solid ' + token.colorWarning : 'none', outlineOffset: -1 }}><${Statistic} title="S varováním" value=${stat.varovani} valueStyle=${{ color: token.colorWarning }} prefix=${html`<${WarningOutlined} />`} /><//><//>
+          <${Col} flex="1"><${Card} size="small" hoverable onClick=${() => setFiltr('ok')} style=${{ cursor: 'pointer', outline: filtr === 'ok' ? '2px solid ' + token.colorSuccess : 'none', outlineOffset: -1 }}><${Statistic} title="Bez problémů" value=${stat.ok} valueStyle=${{ color: token.colorSuccess }} prefix=${html`<${CheckCircleOutlined} />`} /><//><//>
+        <//>
+
+        <${Card} title=${html`<${Flex} justify="space-between" align="center" wrap gap=${8}>
+            <span>Výsledky kontroly<//>
+            <${Text} type="secondary" style=${{ fontSize: token.fontSizeSM, fontWeight: 400 }}>
+              Zobrazeno: ${{ vse: 'vše', chyba: 's chybou', varovani: 's varováním', ok: 'bez problémů', problemy: 's problémy' }[filtr]} — klikněte na kartu nahoře pro filtr
+            <//>
+          <//>`}>
+          ${zobrazene.length ? html`
+            <${Table} columns=${columns} dataSource=${zobrazene.map((v, i) => ({ ...v, key: i }))} size="middle"
+              pagination=${{ pageSize: 20, showSizeChanger: false }}
+              expandable=${{
+                rowExpandable: (r) => Array.isArray(r.komponenty) && r.komponenty.length > 0,
+                expandedRowRender: (r) => html`<div style=${{ padding: '4px 0' }}>
+                  <${Text} strong>Rozbor názvu podle vzoru:<//> <${Text} type="secondary">${splitRule(r.rule).format}<//>
+                  <div style=${{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    ${r.komponenty.map((k, i) => {
+                      const map = { je: ['success', '✓ ', ''], chybi: ['error', '✗ ', ''], nepovinne: ['default', '○ ', ' (nepovinné)'], rucne: ['blue', '? ', ' (ověřte ručně)'] };
+                      const [barva, znak, sufix] = map[k.stav];
+                      return html`<${Tag} key=${i} color=${barva} style=${{ margin: 0 }}>${znak}${k.label}${sufix}<//>`;
+                    })}
+                  </div>
+                  <${Text} type="secondary" style=${{ display: 'block', marginTop: 10, fontSize: token.fontSizeSM }}>
+                    ✓ nalezeno · ✗ chybí a je potřeba doplnit · ○ nepovinné · ? nelze automaticky ověřit (Řada, Typ, Příchuť, Produktové číslo…)
+                  <//>
+                </div>`,
+              }} />
+            ${(filtr === 'problemy' ? stat.chyba + stat.varovani : stat.celkem) > 500
+              ? html`<${Text} type="secondary" style=${{ fontSize: token.fontSizeSM }}>Zobrazeno prvních 500 položek.<//>` : null}
+          ` : html`<${Empty} description="Žádné položky k zobrazení (podle filtru)." />`}
+        <//>
+      ` : null}
+    </div>
+  `;
+}
+
+createRoot(document.getElementById('root')).render(html`
+  <${ConfigProvider} theme=${{ token: { colorPrimary: '#1677ff', borderRadius: 6 } }}>
+    <${App} />
+  <//>
+`);
+</script>
+</body>
+</html>
